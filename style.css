@@ -22,8 +22,8 @@
   --radius-sm: 8px;
   --radius-xs: 4px;
   --transition: 0.25s cubic-bezier(0.4, 0, 0.2, 1);
-  --font-ui: "Noto Sans JP", "Hiragino Kaku Gothic ProN", "Yu Gothic", sans-serif;
-  --font-content: "Noto Serif JP", "Hiragino Mincho ProN", "Yu Mincho", serif;
+  --font-ui: -apple-system, "Hiragino Sans", "Hiragino Kaku Gothic ProN", "Yu Gothic", sans-serif;
+  --font-content: -apple-system, "Hiragino Sans", "Hiragino Kaku Gothic ProN", "Yu Gothic", sans-serif;
   --header-height: 56px;
   --input-area-height: auto;
   --panel-width: min(320px, 88vw);
@@ -61,7 +61,7 @@ html, body {
   height: 100%;
   overflow: hidden;
   font-family: var(--font-ui);
-  font-size: 15px;
+  font-size: 14px;
   line-height: 1.6;
   color: var(--text-primary);
   background: var(--bg-primary);
@@ -367,7 +367,7 @@ html, body {
 .message {
   display: flex;
   flex-direction: column;
-  max-width: 85%;
+  width: 100%;
   animation: fadeInUp 0.2s ease-out;
 }
 
@@ -377,39 +377,39 @@ html, body {
 }
 
 .message.user {
-  align-self: flex-end;
   align-items: flex-end;
 }
 
 .message.assistant {
-  align-self: flex-start;
-  align-items: flex-start;
+  align-items: stretch;
 }
 
 .bubble {
-  border-radius: var(--radius);
-  padding: 12px 16px;
+  border-radius: var(--radius-sm);
+  padding: 11px 14px;
   position: relative;
   word-break: break-word;
-  line-height: 1.7;
+  line-height: 1.75;
 }
 
 .message.user .bubble {
   background: var(--user-bubble-bg);
-  border-bottom-right-radius: var(--radius-xs);
   color: var(--text-primary);
+  max-width: 82%;
+  border-radius: var(--radius);
 }
 
 .message.assistant .bubble {
   background: var(--assistant-bubble-bg);
-  border-bottom-left-radius: var(--radius-xs);
   color: var(--text-primary);
   border: 1px solid var(--border-color);
+  border-left: 2px solid rgba(212, 165, 116, 0.4);
+  width: 100%;
 }
 
 .bubble-content {
   font-family: var(--font-content);
-  font-size: 15px;
+  font-size: 14px;
 }
 
 /* ========== Markdown スタイル ========== */
@@ -615,7 +615,7 @@ html, body {
   outline: none;
   color: var(--text-primary);
   font-family: var(--font-ui);
-  font-size: 15px;
+  font-size: 16px;
   line-height: 1.6;
   resize: none;
   max-height: 200px;
@@ -1128,7 +1128,7 @@ html, body {
   border-radius: var(--radius-sm);
   color: var(--text-primary);
   font-family: var(--font-content);
-  font-size: 15px;
+  font-size: 16px;
   line-height: 1.7;
   padding: 10px 12px;
   resize: none;
@@ -1518,11 +1518,7 @@ html, body {
   }
 
   .messages {
-    padding: 20px 20%;
-  }
-
-  .message {
-    max-width: 80%;
+    padding: 20px 18%;
   }
 
   .floating-buttons {
