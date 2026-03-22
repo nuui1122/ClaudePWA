@@ -179,7 +179,6 @@ class ClaudeAPI {
     // Thinking 設定
     if (thinkingMode === 'adaptive') {
       payload.thinking = { type: 'adaptive' };
-      if (thinkingEffort) payload.thinking.effort = thinkingEffort;
     } else if (thinkingMode === 'enabled') {
       const budget = parseInt(thinkingBudget);
       if (budget >= 1024) payload.thinking = { type: 'enabled', budget_tokens: budget };
