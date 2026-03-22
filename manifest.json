@@ -1,0 +1,17 @@
+{
+  "name": "Claude PWA - 小説執筆支援",
+  "short_name": "Claude PWA",
+  "description": "Claude APIを使った小説執筆支援PWA",
+  "start_url": "./index.html",
+  "display": "standalone",
+  "background_color": "#1a1a2e",
+  "theme_color": "#d4a574",
+  "lang": "ja",
+  "icons": [
+    {
+      "src": "icon-192x192.png",
+      "sizes": "192x192",
+      "type": "image/png"
+    }
+  ]
+}

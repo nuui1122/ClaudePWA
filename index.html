@@ -1,0 +1,386 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <meta name="theme-color" content="#d4a574">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <title>Claude PWA</title>
+  <link rel="manifest" href="manifest.json">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div id="app" class="app dark" data-panel="chat">
+
+    <!-- バックドロップ（サイドパネル表示時のオーバーレイ） -->
+    <div id="backdrop" class="backdrop"></div>
+
+    <!-- ===== 左パネル: 履歴 ===== -->
+    <div id="panel-history" class="panel panel-left" role="complementary" aria-label="チャット履歴">
+      <div class="panel-header">
+        <h2>履歴</h2>
+        <button id="btn-close-history" class="icon-btn" aria-label="履歴を閉じる">✕</button>
+      </div>
+      <div class="panel-toolbar">
+        <button id="btn-new-chat" class="btn-primary full-width">＋ 新しいチャット</button>
+        <div class="history-toolbar-actions">
+          <button id="btn-export-all" class="btn-sm" title="全セッションを書き出し">全エクスポート</button>
+          <label class="btn-sm label-btn" title="セッションを読み込み">
+            インポート
+            <input type="file" id="session-import-file" accept=".json" style="display:none" aria-label="セッションファイルを選択">
+          </label>
+        </div>
+      </div>
+      <div id="history-list" class="history-list" role="list"></div>
+    </div>
+
+    <!-- ===== メインパネル: チャット ===== -->
+    <div id="panel-chat" class="panel panel-main" role="main">
+      <header class="chat-header">
+        <button id="btn-open-history" class="icon-btn" aria-label="履歴を開く" title="履歴">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/>
+          </svg>
+        </button>
+        <h1 id="chat-title" class="chat-title" contenteditable="true" spellcheck="false" aria-label="チャットタイトル">新しいチャット</h1>
+        <button id="btn-open-settings" class="icon-btn" aria-label="設定を開く" title="設定">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <circle cx="12" cy="12" r="3"/>
+            <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+          </svg>
+        </button>
+      </header>
+
+      <!-- フローティングボタン -->
+      <div class="floating-buttons">
+        <button id="btn-summarize" class="floating-btn" title="会話を要約" aria-label="会話を要約" style="display:none" disabled>要</button>
+        <button id="btn-scroll-top" class="floating-btn" title="先頭へ" aria-label="先頭へスクロール">↑</button>
+        <button id="btn-scroll-bottom" class="floating-btn" title="最下部へ" aria-label="最下部へスクロール">↓</button>
+      </div>
+
+      <!-- メッセージエリア -->
+      <div id="messages" class="messages" role="log" aria-live="polite" aria-label="会話"></div>
+
+      <!-- 入力エリア -->
+      <div class="input-area">
+        <div id="token-info" class="token-info"></div>
+        <div class="input-row">
+          <textarea
+            id="input-text"
+            class="input-text"
+            placeholder="メッセージを入力... (Shift+Enterで改行)"
+            rows="1"
+            aria-label="メッセージ入力"
+          ></textarea>
+          <button id="btn-send" class="send-btn" aria-label="送信">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <line x1="22" y1="2" x2="11" y2="13"/>
+              <polygon points="22 2 15 22 11 13 2 9 22 2"/>
+            </svg>
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ===== 右パネル: 設定 ===== -->
+    <div id="panel-settings" class="panel panel-right" role="complementary" aria-label="設定">
+      <div class="panel-header">
+        <h2>設定</h2>
+        <button id="btn-close-settings" class="icon-btn" aria-label="設定を閉じる">✕</button>
+      </div>
+      <div class="settings-content">
+
+        <!-- プロファイル -->
+        <section class="settings-section">
+          <h3 class="settings-section-title">プロファイル</h3>
+          <div class="setting-item">
+            <div class="profile-header-row">
+              <div id="profile-icon-display" class="profile-icon-display" title="クリックしてアイコンを変更" role="button" tabindex="0" aria-label="プロファイルアイコンを変更">
+                <span id="profile-icon-initial"></span>
+                <img id="profile-icon-img" alt="プロファイルアイコン" style="display:none">
+              </div>
+              <input type="text" id="profile-name-input" class="profile-name-input" placeholder="プロファイル名" aria-label="プロファイル名">
+              <input type="file" id="profile-icon-file" accept="image/*" style="display:none" aria-label="アイコン画像を選択">
+            </div>
+          </div>
+          <div class="setting-item">
+            <label for="profile-select">プロファイル切り替え</label>
+            <select id="profile-select" aria-label="プロファイルを選択"></select>
+          </div>
+          <div class="setting-item">
+            <div class="profile-action-row">
+              <button id="btn-profile-new" class="btn-sm">新規</button>
+              <button id="btn-profile-copy" class="btn-sm">複製</button>
+              <button id="btn-profile-export" class="btn-sm">書き出し</button>
+              <label class="btn-sm" style="cursor:pointer">
+                読み込み
+                <input type="file" id="profile-import-file" accept=".json" style="display:none" aria-label="プロファイルファイルを選択">
+              </label>
+              <button id="btn-profile-delete" class="btn-sm btn-sm-danger">削除</button>
+            </div>
+          </div>
+        </section>
+
+        <!-- 基本設定 -->
+        <section class="settings-section">
+          <h3 class="settings-section-title">基本設定</h3>
+          <div class="setting-item">
+            <label for="setting-api-key">Claude APIキー</label>
+            <input type="password" id="setting-api-key" placeholder="sk-ant-api03-..." autocomplete="off">
+            <p class="setting-hint">APIキーはブラウザのみに保存されます。外部には送信されません。</p>
+          </div>
+          <div class="setting-item">
+            <label for="setting-model">モデル</label>
+            <select id="setting-model">
+              <option value="claude-sonnet-4-6">Sonnet 4.6 ★推奨</option>
+              <option value="claude-sonnet-4-5-20250929">Sonnet 4.5</option>
+              <option value="claude-haiku-4-5-20251001">Haiku 4.5（高速）</option>
+              <option value="claude-sonnet-4-20250514">Sonnet 4</option>
+            </select>
+          </div>
+          <div class="setting-item">
+            <label for="setting-additional-models">追加モデル（カンマ区切り）</label>
+            <input type="text" id="setting-additional-models" placeholder="claude-opus-4-6,...">
+          </div>
+        </section>
+
+        <!-- パラメータ -->
+        <section class="settings-section">
+          <h3 class="settings-section-title">パラメータ</h3>
+          <div class="setting-item">
+            <label for="setting-system-prompt">システムプロンプト（デフォルト）</label>
+            <textarea id="setting-system-prompt" rows="5" placeholder="AIへの基本指示（全チャット共通）..."></textarea>
+          </div>
+          <div class="setting-item">
+            <label for="setting-max-tokens">Max Tokens</label>
+            <input type="number" id="setting-max-tokens" value="4096" min="1" max="131072">
+          </div>
+          <div class="setting-item" id="temperature-item">
+            <label>Temperature: <span id="temperature-display">1.00</span></label>
+            <div class="slider-row">
+              <input type="range" id="setting-temperature-slider" min="0" max="1" step="0.01" value="1">
+              <input type="number" id="setting-temperature" min="0" max="1" step="0.01" value="1" class="slider-number">
+            </div>
+          </div>
+          <div class="setting-item">
+            <label for="setting-top-k">Top K <span class="param-optional">（空=API任せ）</span></label>
+            <input type="number" id="setting-top-k" min="1" placeholder="例: 40">
+          </div>
+          <div class="setting-item">
+            <label for="setting-top-p">Top P <span class="param-optional">（空=API任せ）</span></label>
+            <input type="number" id="setting-top-p" min="0" max="1" step="0.01" placeholder="例: 0.95">
+          </div>
+        </section>
+
+        <!-- アドバンスド設定 -->
+        <section class="settings-section">
+          <h3 class="settings-section-title">アドバンスド設定</h3>
+          <div class="setting-item">
+            <label for="setting-dummy-user">ダミー User プロンプト</label>
+            <textarea id="setting-dummy-user" rows="3" placeholder="送信前に追加するuserロールのテキスト..."></textarea>
+          </div>
+          <div class="setting-item">
+            <label for="setting-dummy-model">ダミー Model プロンプト</label>
+            <textarea id="setting-dummy-model" rows="3" placeholder="送信前に追加するassistantロールのテキスト..."></textarea>
+          </div>
+          <div class="setting-item">
+            <label class="checkbox-label">
+              <input type="checkbox" id="setting-swap-dummy">
+              <span>ダミーの順序を入れ替える（Model→User）</span>
+            </label>
+          </div>
+          <div class="setting-item">
+            <label class="checkbox-label">
+              <input type="checkbox" id="setting-concatenate-dummy">
+              <span>ダミーモデルと回答を連結（プリフィル）</span>
+            </label>
+          </div>
+        </section>
+
+        <!-- 思考プロセス -->
+        <section class="settings-section">
+          <h3 class="settings-section-title">思考プロセス（Thinking）</h3>
+          <div class="setting-item">
+            <label for="setting-thinking-mode">Thinking モード</label>
+            <select id="setting-thinking-mode">
+              <option value="adaptive">Adaptive（推奨・Claude 4.6系）</option>
+              <option value="enabled">Extended（旧モデル用・budget指定）</option>
+              <option value="disabled">無効</option>
+            </select>
+          </div>
+          <div class="setting-item" id="thinking-effort-row">
+            <label for="setting-thinking-effort">Effort レベル</label>
+            <select id="setting-thinking-effort">
+              <option value="low">low（軽量・シンプルな問題はスキップ）</option>
+              <option value="medium">medium</option>
+              <option value="high" selected>high（デフォルト・ほぼ常に思考）</option>
+              <option value="max">max（Opus 4.6 のみ）</option>
+            </select>
+          </div>
+          <div class="setting-item" id="thinking-budget-row">
+            <label for="setting-thinking-budget">Thinking Budget（トークン数）</label>
+            <input type="number" id="setting-thinking-budget" min="1024" value="10000" placeholder="10000">
+            <p class="setting-hint">1024 以上で有効。Extended モード専用。</p>
+          </div>
+          <div class="setting-item" id="thinking-include-row">
+            <label class="checkbox-label">
+              <input type="checkbox" id="setting-include-thoughts">
+              <span>思考プロセスを折りたたみ表示する</span>
+            </label>
+          </div>
+          <div class="setting-item">
+            <p class="setting-hint">※ Thinking 有効時は Temperature が 1.0 に固定されます（Claude API 仕様）</p>
+          </div>
+        </section>
+
+        <!-- 校正機能 -->
+        <section class="settings-section">
+          <h3 class="settings-section-title">校正機能</h3>
+          <div class="setting-item">
+            <label class="checkbox-label">
+              <input type="checkbox" id="setting-proofreading-enabled">
+              <span>生成後に別モデルで校正する</span>
+            </label>
+          </div>
+          <div class="setting-item">
+            <label for="setting-proofreading-model">校正用モデル名</label>
+            <input type="text" id="setting-proofreading-model" placeholder="claude-haiku-4-5-20251001">
+          </div>
+          <div class="setting-item">
+            <label for="setting-proofreading-prompt">校正用システムプロンプト</label>
+            <textarea id="setting-proofreading-prompt" rows="4" placeholder="校正の指示内容..."></textarea>
+          </div>
+        </section>
+
+        <!-- 履歴の要約機能 -->
+        <section class="settings-section">
+          <h3 class="settings-section-title">履歴の要約機能</h3>
+          <div class="setting-item">
+            <label class="checkbox-label">
+              <input type="checkbox" id="setting-summary-enabled">
+              <span>チャット画面に要約ボタンを表示（50件以上で有効化）</span>
+            </label>
+          </div>
+          <div class="setting-item">
+            <label for="setting-summary-model">要約用モデル名</label>
+            <input type="text" id="setting-summary-model" placeholder="claude-haiku-4-5-20251001">
+          </div>
+          <div class="setting-item">
+            <label for="setting-summary-prompt">要約用システムプロンプト</label>
+            <textarea id="setting-summary-prompt" rows="4" placeholder="要約の指示内容..."></textarea>
+          </div>
+        </section>
+
+        <!-- メモリ機能 -->
+        <section class="settings-section">
+          <h3 class="settings-section-title">メモリ機能</h3>
+          <div class="setting-item">
+            <label class="checkbox-label">
+              <input type="checkbox" id="setting-memory-enabled">
+              <span>メモリ機能を有効にする（APIへ記憶を自動注入）</span>
+            </label>
+          </div>
+          <div class="setting-item">
+            <label for="setting-memory-interval">自動学習の間隔</label>
+            <select id="setting-memory-interval">
+              <option value="0">自動学習OFF</option>
+              <option value="10" selected>10メッセージごと</option>
+              <option value="20">20メッセージごと</option>
+              <option value="30">30メッセージごと</option>
+              <option value="40">40メッセージごと</option>
+              <option value="50">50メッセージごと</option>
+            </select>
+          </div>
+          <div class="setting-item">
+            <button id="btn-memory-manage" class="btn-sm full-width">記憶を管理する</button>
+          </div>
+        </section>
+
+        <!-- その他 -->
+        <section class="settings-section">
+          <h3 class="settings-section-title">表示・操作</h3>
+          <div class="setting-item">
+            <label class="checkbox-label">
+              <input type="checkbox" id="setting-dark-mode" checked>
+              <span>ダークモード</span>
+            </label>
+          </div>
+          <div class="setting-item">
+            <label class="checkbox-label">
+              <input type="checkbox" id="setting-enter-send">
+              <span>Enterキーで送信（OFFはCtrl+Enter）</span>
+            </label>
+          </div>
+          <div class="setting-item">
+            <label class="checkbox-label">
+              <input type="checkbox" id="setting-auto-scroll" checked>
+              <span>自動スクロール</span>
+            </label>
+          </div>
+        </section>
+
+        <!-- 保存ボタン -->
+        <div class="settings-footer">
+          <button id="btn-save-settings" class="btn-primary full-width">設定を保存</button>
+        </div>
+
+      </div>
+    </div>
+
+  </div><!-- /#app -->
+
+  <!-- Toast通知 -->
+  <div id="toast" class="toast" role="alert" aria-live="assertive"></div>
+
+  <!-- 確認モーダル -->
+  <div id="modal-overlay" class="modal-overlay hidden" role="dialog" aria-modal="true">
+    <div class="modal">
+      <p id="modal-message" class="modal-message"></p>
+      <div class="modal-buttons">
+        <button id="modal-cancel" class="btn-secondary">キャンセル</button>
+        <button id="modal-confirm" class="btn-danger">OK</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 要約確認モーダル -->
+  <div id="summary-modal" class="modal-overlay hidden" role="dialog" aria-modal="true" aria-label="要約確認">
+    <div class="modal summary-modal-content">
+      <h3 class="summary-modal-title">会話要約</h3>
+      <p class="modal-message">要約内容を確認・編集して「確定」を押してください。</p>
+      <textarea id="summary-modal-textarea" class="summary-modal-textarea" rows="12" placeholder="要約を生成中..."></textarea>
+      <div class="modal-buttons">
+        <button id="summary-modal-cancel" class="btn-secondary">キャンセル</button>
+        <button id="summary-modal-confirm" class="btn-primary" disabled>確定</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 記憶管理モーダル -->
+  <div id="memory-modal" class="modal-overlay hidden" role="dialog" aria-modal="true" aria-label="記憶を管理">
+    <div class="modal memory-modal-content">
+      <h3 class="summary-modal-title">記憶を管理</h3>
+      <p class="modal-message">メモリ機能で保存された記憶の確認・追加・削除ができます。</p>
+      <div id="memory-list" class="memory-list"></div>
+      <div class="memory-add-row">
+        <input type="text" id="memory-key-input" class="memory-key-input" placeholder="キー（例: 好きなジャンル）" aria-label="記憶のキー">
+        <input type="text" id="memory-value-input" class="memory-value-input" placeholder="値（例: ダークファンタジー好き）" aria-label="記憶の値">
+        <button id="btn-memory-add" class="btn-sm">追加</button>
+      </div>
+      <div class="modal-buttons">
+        <button id="memory-modal-close" class="btn-secondary">閉じる</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- marked.js (Markdown) -->
+  <script src="https://cdn.jsdelivr.net/npm/marked@9/marked.min.js"></script>
+  <!-- Prism.js (コードハイライト) -->
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/prismjs@1/themes/prism-tomorrow.min.css">
+  <script src="https://cdn.jsdelivr.net/npm/prismjs@1/prism.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/prismjs@1/plugins/autoloader/prism-autoloader.min.js"></script>
+
+  <script src="app.js"></script>
+</body>
+</html>
