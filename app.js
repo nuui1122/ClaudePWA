@@ -315,6 +315,7 @@ class GeminiAPI {
   /**
    * SSEストリーミングでGemini APIにリクエストを送信する。
    * thinkingパート（thought:true）は onThinkingChunk を呼ぶ。
+   * 安全フィルターは全てOFF（BLOCK_NONE）に設定する。
    */
   async streamMessage({ messages, settings, systemPrompt, signal, onChunk, onThinkingChunk, onUsage }) {
     const { geminiApiKey, model, maxTokens, temperature, topK, topP, geminiThinkingBudget } = settings;
@@ -329,6 +330,14 @@ class GeminiAPI {
       generationConfig: {
         maxOutputTokens: maxTokens || 4096,
       },
+      // 安全フィルターを全て無効化
+      safetySettings: [
+        { category: 'HARM_CATEGORY_HARASSMENT',       threshold: 'BLOCK_NONE' },
+        { category: 'HARM_CATEGORY_HATE_SPEECH',       threshold: 'BLOCK_NONE' },
+        { category: 'HARM_CATEGORY_SEXUALLY_EXPLICIT', threshold: 'BLOCK_NONE' },
+        { category: 'HARM_CATEGORY_DANGEROUS_CONTENT', threshold: 'BLOCK_NONE' },
+        { category: 'HARM_CATEGORY_CIVIC_INTEGRITY',   threshold: 'BLOCK_NONE' },
+      ],
     };
 
     if (systemPrompt?.trim()) {
@@ -363,7 +372,8 @@ class GeminiAPI {
     if (!response.ok) {
       let errMsg = `Gemini APIエラー: HTTP ${response.status}`;
       try {
-        const errBody = await response.json();
+        const errText = await response.text();
+        const errBody = JSON.parse(errText);
         errMsg = errBody.error?.message || errMsg;
       } catch (_) {}
       throw new Error(errMsg);
@@ -372,6 +382,7 @@ class GeminiAPI {
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
     let buffer = '';
+    let lastFinishReason = null;
 
     while (true) {
       const { done, value } = await reader.read();
@@ -385,16 +396,22 @@ class GeminiAPI {
         if (data === '[DONE]') return;
         try {
           const parsed = JSON.parse(data);
-          const parts = parsed.candidates?.[0]?.content?.parts;
-          if (parts) {
-            for (const part of parts) {
-              if (part.thought) {
-                onThinkingChunk?.(part.text || '');
-              } else if (part.text) {
-                onChunk(part.text);
+          const candidate = parsed.candidates?.[0];
+
+          if (candidate) {
+            const parts = candidate.content?.parts;
+            if (parts) {
+              for (const part of parts) {
+                if (part.thought) {
+                  onThinkingChunk?.(part.text || '');
+                } else if (part.text) {
+                  onChunk(part.text);
+                }
               }
             }
+            if (candidate.finishReason) lastFinishReason = candidate.finishReason;
           }
+
           // トークン使用量（Claude形式に正規化して返す）
           if (parsed.usageMetadata) {
             onUsage?.({
@@ -404,6 +421,14 @@ class GeminiAPI {
           }
         } catch (_) {}
       }
+    }
+
+    // ストリーム終了後、安全フィルターによるブロックを検知してエラーを投げる
+    if (lastFinishReason === 'SAFETY') {
+      throw new Error('Gemini: 安全フィルターによりコンテンツがブロックされました（SAFETY）。safetySettingsは BLOCK_NONE に設定済みですが、モデル側で制限されている可能性があります。');
+    }
+    if (lastFinishReason === 'RECITATION') {
+      throw new Error('Gemini: 著作権ポリシーによりコンテンツがブロックされました（RECITATION）。');
     }
   }
 }
