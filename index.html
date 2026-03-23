@@ -126,8 +126,20 @@
         <section class="settings-section">
           <h3 class="settings-section-title">基本設定</h3>
           <div class="setting-item">
+            <label for="setting-provider">APIプロバイダー</label>
+            <select id="setting-provider">
+              <option value="claude">Claude（Anthropic）</option>
+              <option value="gemini">Gemini（Google）</option>
+            </select>
+          </div>
+          <div class="setting-item" id="claude-api-key-row">
             <label for="setting-api-key">Claude APIキー</label>
             <input type="password" id="setting-api-key" placeholder="sk-ant-api03-..." autocomplete="off">
+            <p class="setting-hint">APIキーはブラウザのみに保存されます。外部には送信されません。</p>
+          </div>
+          <div class="setting-item" id="gemini-api-key-row" style="display:none">
+            <label for="setting-gemini-api-key">Gemini APIキー</label>
+            <input type="password" id="setting-gemini-api-key" placeholder="AIza..." autocomplete="off">
             <p class="setting-hint">APIキーはブラウザのみに保存されます。外部には送信されません。</p>
           </div>
           <div class="setting-item">
@@ -195,6 +207,7 @@
               <input type="checkbox" id="setting-concatenate-dummy">
               <span>ダミーモデルと回答を連結（プリフィル）</span>
             </label>
+            <p class="setting-hint">※ Gemini プロバイダーではプリフィルは非対応のため無視されます。</p>
           </div>
         </section>
 
@@ -202,7 +215,7 @@
         <section class="settings-section">
           <h3 class="settings-section-title">思考プロセス（Thinking）</h3>
           <div class="setting-item">
-            <label for="setting-thinking-mode">Thinking モード</label>
+            <label for="setting-thinking-mode">Thinking モード <span class="param-optional">（Claude のみ）</span></label>
             <select id="setting-thinking-mode">
               <option value="adaptive">Adaptive（推奨・Claude 4.6系）</option>
               <option value="enabled">Extended（旧モデル用・budget指定）</option>
@@ -223,14 +236,19 @@
             <input type="number" id="setting-thinking-budget" min="1024" value="10000" placeholder="10000">
             <p class="setting-hint">1024 以上で有効。Extended モード専用。</p>
           </div>
+          <div class="setting-item" id="gemini-thinking-row" style="display:none">
+            <label for="setting-gemini-thinking-budget">Gemini Thinking Budget</label>
+            <input type="number" id="setting-gemini-thinking-budget" value="8192" placeholder="8192">
+            <p class="setting-hint">-1=思考無効、0=モデル任せ（自動）、1以上=トークン数指定。Gemini 2.5 Pro/Flash のみ対応。</p>
+          </div>
           <div class="setting-item" id="thinking-include-row">
             <label class="checkbox-label">
               <input type="checkbox" id="setting-include-thoughts">
               <span>思考プロセスを折りたたみ表示する</span>
             </label>
           </div>
-          <div class="setting-item">
-            <p class="setting-hint">※ Thinking 有効時は Temperature が 1.0 に固定されます（Claude API 仕様）</p>
+          <div class="setting-item" id="thinking-claude-hint">
+            <p class="setting-hint">※ Claude Thinking 有効時は Temperature が 1.0 に固定されます（Claude API 仕様）</p>
           </div>
         </section>
 

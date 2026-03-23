@@ -13,8 +13,19 @@ const PRESET_MODELS = [
   { id: 'claude-sonnet-4-20250514',   label: 'Sonnet 4' },
 ];
 
+const GEMINI_API_BASE = 'https://generativelanguage.googleapis.com/v1beta/models';
+const GEMINI_DEFAULT_MODEL = 'gemini-2.5-pro';
+const GEMINI_PRESET_MODELS = [
+  { id: 'gemini-2.5-pro',             label: 'Gemini 2.5 Pro ★推奨' },
+  { id: 'gemini-2.5-flash',           label: 'Gemini 2.5 Flash（高速）' },
+  { id: 'gemini-2.0-flash',           label: 'Gemini 2.0 Flash' },
+];
+
 const DEFAULT_SETTINGS = {
+  provider:              'claude',   // 'claude' | 'gemini'
   apiKey:                '',
+  geminiApiKey:          '',
+  geminiThinkingBudget:  8192,  // -1=無効, 0=自動, 1以上=トークン数指定
   model:                 DEFAULT_MODEL,
   additionalModels:      '',
   systemPrompt:          '',
@@ -244,11 +255,166 @@ class ClaudeAPI {
   }
 }
 
+// ========== Gemini API ==========
+class GeminiAPI {
+  /**
+   * Claudeメッセージ形式（role:'user'/'assistant', content:string）を
+   * Gemini形式（role:'user'/'model', parts:[{text:string}]）に変換する
+   */
+  _toGeminiMessages(messages) {
+    return messages.map(m => ({
+      role: m.role === 'assistant' ? 'model' : m.role,
+      parts: [{ text: m.content || '' }],
+    }));
+  }
+
+  /** 連続する同一ロールのメッセージをGemini形式で結合する */
+  _mergeConsecutiveRoles(messages) {
+    const merged = [];
+    for (const msg of messages) {
+      const prev = merged[merged.length - 1];
+      if (prev && prev.role === msg.role) {
+        prev.parts = [...prev.parts, ...msg.parts];
+      } else {
+        merged.push({ role: msg.role, parts: [...msg.parts] });
+      }
+    }
+    return merged;
+  }
+
+  /**
+   * API送信用メッセージ配列を構築する。
+   * ダミープロンプトを挿入し、Gemini形式（user/model）に変換する。
+   * ※ concatenateDummyModel はGeminiではプリフィル非対応のため無視する。
+   */
+  buildApiMessages(historyMessages, userMessage, settings) {
+    const { dummyUserPrompt, dummyModelPrompt, swapDummyOrder } = settings;
+    const history      = this._toGeminiMessages(historyMessages.slice(0, -1));
+    const hasDummyUser  = dummyUserPrompt  && dummyUserPrompt.trim();
+    const hasDummyModel = dummyModelPrompt && dummyModelPrompt.trim();
+
+    let messages;
+    if (swapDummyOrder) {
+      messages = [
+        ...history,
+        ...(hasDummyModel ? [{ role: 'model', parts: [{ text: dummyModelPrompt.trim() }] }] : []),
+        ...(hasDummyUser  ? [{ role: 'user',  parts: [{ text: dummyUserPrompt.trim()  }] }] : []),
+        { role: 'user', parts: [{ text: userMessage }] },
+      ];
+    } else {
+      messages = [
+        ...history,
+        ...(hasDummyUser  ? [{ role: 'user',  parts: [{ text: dummyUserPrompt.trim()  }] }] : []),
+        ...(hasDummyModel ? [{ role: 'model', parts: [{ text: dummyModelPrompt.trim() }] }] : []),
+        { role: 'user', parts: [{ text: userMessage }] },
+      ];
+    }
+    return this._mergeConsecutiveRoles(messages);
+  }
+
+  /**
+   * SSEストリーミングでGemini APIにリクエストを送信する。
+   * thinkingパート（thought:true）は onThinkingChunk を呼ぶ。
+   */
+  async streamMessage({ messages, settings, systemPrompt, signal, onChunk, onThinkingChunk, onUsage }) {
+    const { geminiApiKey, model, maxTokens, temperature, topK, topP, geminiThinkingBudget } = settings;
+
+    if (!geminiApiKey?.trim()) throw new Error('Gemini APIキーが設定されていません。設定画面でAPIキーを入力してください。');
+
+    const activeModel = model || GEMINI_DEFAULT_MODEL;
+    const url = `${GEMINI_API_BASE}/${activeModel}:streamGenerateContent?key=${geminiApiKey.trim()}&alt=sse`;
+
+    const payload = {
+      contents: messages,
+      generationConfig: {
+        maxOutputTokens: maxTokens || 4096,
+      },
+    };
+
+    if (systemPrompt?.trim()) {
+      payload.system_instruction = { parts: [{ text: systemPrompt.trim() }] };
+    }
+
+    // Thinking設定: -1=無効(budget:0), 0=自動(未設定), 1以上=指定値
+    const thinkBudget = parseInt(geminiThinkingBudget ?? 8192);
+    if (thinkBudget < 0) {
+      payload.generationConfig.thinkingConfig = { thinkingBudget: 0 };
+    } else if (thinkBudget > 0) {
+      payload.generationConfig.thinkingConfig = { thinkingBudget: thinkBudget };
+    }
+    // thinkBudget === 0 のときは thinkingConfig 未設定（モデル任せ）
+
+    // Temperature / TopK / TopP
+    if (temperature !== null && temperature !== undefined && temperature !== '') {
+      payload.generationConfig.temperature = parseFloat(temperature);
+    }
+    const kVal = parseInt(topK);
+    if (!isNaN(kVal) && kVal > 0) payload.generationConfig.topK = kVal;
+    const pVal = parseFloat(topP);
+    if (!isNaN(pVal) && topP !== '') payload.generationConfig.topP = pVal;
+
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+      signal,
+    });
+
+    if (!response.ok) {
+      let errMsg = `Gemini APIエラー: HTTP ${response.status}`;
+      try {
+        const errBody = await response.json();
+        errMsg = errBody.error?.message || errMsg;
+      } catch (_) {}
+      throw new Error(errMsg);
+    }
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split('\n');
+      buffer = lines.pop();
+      for (const line of lines) {
+        if (!line.startsWith('data: ')) continue;
+        const data = line.slice(6).trim();
+        if (data === '[DONE]') return;
+        try {
+          const parsed = JSON.parse(data);
+          const parts = parsed.candidates?.[0]?.content?.parts;
+          if (parts) {
+            for (const part of parts) {
+              if (part.thought) {
+                onThinkingChunk?.(part.text || '');
+              } else if (part.text) {
+                onChunk(part.text);
+              }
+            }
+          }
+          // トークン使用量（Claude形式に正規化して返す）
+          if (parsed.usageMetadata) {
+            onUsage?.({
+              input_tokens:  parsed.usageMetadata.promptTokenCount     || 0,
+              output_tokens: parsed.usageMetadata.candidatesTokenCount || 0,
+            });
+          }
+        } catch (_) {}
+      }
+    }
+  }
+}
+
 // ========== メインアプリ ==========
 class App {
   constructor() {
     this.db              = new Database();
-    this.api             = new ClaudeAPI();
+    this.claudeApi       = new ClaudeAPI();
+    this.geminiApi       = new GeminiAPI();
+    this.api             = this.claudeApi; // 後方互換のため保持（_getActiveApi()を使用推奨）
     this.settings        = { ...DEFAULT_SETTINGS };
     this.sessions        = [];
     this.currentSession  = null;
@@ -322,7 +488,10 @@ class App {
 
   syncSettingsToUI() {
     const s = this.settings;
-    this.setVal('setting-api-key',           s.apiKey);
+    // プロバイダー
+    this.setVal('setting-provider',       s.provider      || 'claude');
+    this.setVal('setting-api-key',        s.apiKey);
+    this.setVal('setting-gemini-api-key', s.geminiApiKey  || '');
     this.setVal('setting-system-prompt',     s.systemPrompt);
     this.setVal('setting-max-tokens',        s.maxTokens);
     this.setVal('setting-additional-models', s.additionalModels);
@@ -354,32 +523,52 @@ class App {
     // メモリ機能
     this.setChecked('setting-memory-enabled', s.memoryEnabled);
     this.setVal('setting-memory-interval', s.memoryInterval ?? 10);
-    // Thinking
+    // Thinking（Claude）
     this.setVal('setting-thinking-mode',   s.thinkingMode   || 'adaptive');
     this.setVal('setting-thinking-effort', s.thinkingEffort || 'high');
     this.setVal('setting-thinking-budget', s.thinkingBudget ?? 10000);
     this.setChecked('setting-include-thoughts', s.includeThoughts);
-    this.updateModelSelect();
-    this._updateThinkingUI();
+    // Thinking（Gemini）
+    this.setVal('setting-gemini-thinking-budget', s.geminiThinkingBudget ?? 8192);
+    this._updateProviderUI();
   }
 
   updateModelSelect() {
+    const provider  = this.getVal('setting-provider') || this.settings.provider || 'claude';
+    const isGemini  = provider === 'gemini';
+    const presets   = isGemini ? GEMINI_PRESET_MODELS : PRESET_MODELS;
+    const defaultId = isGemini ? GEMINI_DEFAULT_MODEL : DEFAULT_MODEL;
+
     const select = document.getElementById('setting-model');
-    while (select.options.length > PRESET_MODELS.length) select.remove(select.options.length - 1);
-    const presetIds = PRESET_MODELS.map(m => m.id);
+    if (!select) return;
+    select.innerHTML = '';
+    presets.forEach(m => {
+      const o = document.createElement('option');
+      o.value = m.id; o.textContent = m.label;
+      select.appendChild(o);
+    });
+    const presetIds = presets.map(m => m.id);
     (this.settings.additionalModels || '').split(',').map(s => s.trim())
       .filter(s => s && !presetIds.includes(s))
       .forEach(m => { const o = document.createElement('option'); o.value = o.textContent = m; select.appendChild(o); });
+
     select.value = this.settings.model;
-    if (!select.value) select.value = DEFAULT_MODEL;
+    if (!select.value) {
+      select.value = defaultId;
+      this.settings.model = defaultId;
+    }
   }
 
   readSettingsFromUI() {
+    this.settings.provider              = this.getVal('setting-provider') || 'claude';
     this.settings.apiKey                = this.getVal('setting-api-key');
+    this.settings.geminiApiKey          = this.getVal('setting-gemini-api-key') || '';
+    this.settings.geminiThinkingBudget  = parseInt(this.getVal('setting-gemini-thinking-budget')) || 8192;
     this.settings.systemPrompt          = this.getVal('setting-system-prompt');
     this.settings.maxTokens             = parseInt(this.getVal('setting-max-tokens')) || 4096;
     this.settings.additionalModels      = this.getVal('setting-additional-models');
-    this.settings.model                 = document.getElementById('setting-model').value || DEFAULT_MODEL;
+    const isGemini = this.settings.provider === 'gemini';
+    this.settings.model                 = document.getElementById('setting-model').value || (isGemini ? GEMINI_DEFAULT_MODEL : DEFAULT_MODEL);
     // Temperature
     const tempStr = this.getVal('setting-temperature');
     this.settings.temperature = tempStr !== '' ? parseFloat(tempStr) : 1.0;
@@ -419,27 +608,62 @@ class App {
   }
 
   /**
-   * Thinking モードに応じて設定UIの表示を切り替える。
-   * effort行: adaptive時のみ表示
-   * budget行: enabled時のみ表示
-   * include行: 無効以外で表示
-   * temperature行: thinking有効時はグレーアウト
+   * プロバイダー切り替えに応じてUIの表示を切り替える。
+   * APIキー行・モデルリスト・Thinking設定を更新する。
    */
-  _updateThinkingUI() {
-    const mode = this.getVal('setting-thinking-mode');
-    const isEnabled = mode !== 'disabled';
+  _updateProviderUI() {
+    const provider = this.getVal('setting-provider') || 'claude';
+    const isGemini = provider === 'gemini';
 
     const show = (id, visible) => {
       const el = document.getElementById(id);
       if (el) el.style.display = visible ? '' : 'none';
     };
-    show('thinking-effort-row',  mode === 'adaptive');
-    show('thinking-budget-row',  mode === 'enabled');
-    show('thinking-include-row', isEnabled);
+    show('claude-api-key-row', !isGemini);
+    show('gemini-api-key-row',  isGemini);
 
-    // Temperature: thinking有効時はグレーアウト
-    const tempItem = document.getElementById('temperature-item');
-    if (tempItem) tempItem.classList.toggle('param-disabled', isEnabled);
+    this._updateThinkingUI();
+    this.updateModelSelect();
+  }
+
+  /**
+   * Thinking モードに応じて設定UIの表示を切り替える。
+   * プロバイダーがGeminiの場合はGemini用Thinking Budget行のみ表示。
+   * effort行: Claude adaptive時のみ表示
+   * budget行: Claude enabled時のみ表示
+   * include行: Thinking有効時に表示
+   * temperature行: Claude Thinking有効時はグレーアウト
+   */
+  _updateThinkingUI() {
+    const provider  = this.getVal('setting-provider') || 'claude';
+    const isGemini  = provider === 'gemini';
+
+    const show = (id, visible) => {
+      const el = document.getElementById(id);
+      if (el) el.style.display = visible ? '' : 'none';
+    };
+
+    show('gemini-thinking-row', isGemini);
+
+    if (isGemini) {
+      // Geminiプロバイダー: Claude Thinking行を非表示
+      show('thinking-effort-row',  false);
+      show('thinking-budget-row',  false);
+      show('thinking-include-row', true);
+      show('thinking-claude-hint', false);
+      const tempItem = document.getElementById('temperature-item');
+      if (tempItem) tempItem.classList.remove('param-disabled');
+    } else {
+      // Claudeプロバイダー: 既存ロジック
+      const mode = this.getVal('setting-thinking-mode');
+      const isEnabled = mode !== 'disabled';
+      show('thinking-effort-row',  mode === 'adaptive');
+      show('thinking-budget-row',  mode === 'enabled');
+      show('thinking-include-row', isEnabled);
+      show('thinking-claude-hint', true);
+      const tempItem = document.getElementById('temperature-item');
+      if (tempItem) tempItem.classList.toggle('param-disabled', isEnabled);
+    }
   }
 
   // ========== プロファイル管理 ==========
@@ -687,6 +911,11 @@ class App {
 
   // ========== 生成ヘルパー ==========
 
+  /** 現在のプロバイダー設定に応じたAPIクラスを返す */
+  _getActiveApi() {
+    return this.settings.provider === 'gemini' ? this.geminiApi : this.claudeApi;
+  }
+
   _makeMessage(role, content = '') {
     return {
       id: generateId(), role, content, thinking: null,
@@ -697,6 +926,8 @@ class App {
   }
 
   _getPrefixText() {
+    // Geminiはプリフィル非対応のため空文字を返す
+    if (this.settings.provider === 'gemini') return '';
     return (this.settings.concatenateDummyModel && this.settings.dummyModelPrompt)
       ? this.settings.dummyModelPrompt.trim() : '';
   }
@@ -728,7 +959,7 @@ class App {
     let thinkingText     = '';
     let thinkingStreamEl = null;
 
-    await this.api.streamMessage({
+    await this._getActiveApi().streamMessage({
       messages: apiMessages, settings: this.settings, systemPrompt, signal,
       onChunk: (chunk) => {
         // 思考ストリームインジケーターを除去（テキスト開始時）
@@ -845,6 +1076,7 @@ class App {
       ...this.settings,
       model: this.settings.summaryModel || 'claude-haiku-4-5-20251001',
       thinkingMode: 'disabled',
+      geminiThinkingBudget: -1,
     };
     const convText = msgs.map(m =>
       `[${m.role === 'user' ? 'ユーザー' : 'AI'}]:\n${m.content}`
@@ -854,7 +1086,7 @@ class App {
 
     try {
       let summary = '';
-      await this.api.streamMessage({
+      await this._getActiveApi().streamMessage({
         messages: [{ role: 'user', content: convText }],
         settings: summarySettings,
         systemPrompt: sysPrompt,
@@ -910,13 +1142,14 @@ class App {
       ...this.settings,
       model: this.settings.summaryModel || 'claude-haiku-4-5-20251001',
       thinkingMode: 'disabled',
+      geminiThinkingBudget: -1,
       maxTokens: 1024,
     };
     const sysPrompt = '以下の会話からユーザーの好み・特徴・要望・癖を抽出してください。JSON配列形式のみで返してください: [{"key": "特徴名", "value": "内容"}]';
 
     try {
       let responseText = '';
-      await this.api.streamMessage({
+      await this._getActiveApi().streamMessage({
         messages: [{ role: 'user', content: convText }],
         settings: extractSettings,
         systemPrompt: sysPrompt,
@@ -993,13 +1226,13 @@ class App {
 
     const contentEl = bubbleEl.querySelector('.bubble-content');
     // 校正用に Thinking を無効化したコピー設定を使用
-    const proofSettings = { ...this.settings, model: proofreadingModel, thinkingMode: 'disabled' };
+    const proofSettings = { ...this.settings, model: proofreadingModel, thinkingMode: 'disabled', geminiThinkingBudget: -1 };
     const sysPrompt = proofreadingSystemPrompt?.trim()
       || '以下のテキストを校正してください。誤字脱字・文法の誤りを修正し、原文のスタイルと意図を保ちながら読みやすく整えてください。';
 
     try {
       let proofText = '';
-      await this.api.streamMessage({
+      await this._getActiveApi().streamMessage({
         messages: [{ role: 'user', content: assistantMsg.content }],
         settings: proofSettings,
         systemPrompt: sysPrompt,
@@ -1038,8 +1271,9 @@ class App {
     const input = document.getElementById('input-text');
     const text  = input.value.trim();
     if (!text || this.isGenerating) return;
-    if (!this.settings.apiKey?.trim()) {
-      this.showToast('APIキーを設定してください', 'error');
+    const activeKey = this.settings.provider === 'gemini' ? this.settings.geminiApiKey : this.settings.apiKey;
+    if (!activeKey?.trim()) {
+      this.showToast(this.settings.provider === 'gemini' ? 'Gemini APIキーを設定してください' : 'Claude APIキーを設定してください', 'error');
       this.showPanel('settings');
       return;
     }
@@ -1057,7 +1291,7 @@ class App {
     const contentEl = bubble.querySelector('.bubble-content');
 
     const systemPrompt = this._buildSystemPrompt();
-    const apiMessages  = this.api.buildApiMessages(
+    const apiMessages  = this._getActiveApi().buildApiMessages(
       this._buildContextMessages(this.currentSession.messages.slice(0, -1)), text, this.settings
     );
     const prefixText = this._getPrefixText();
@@ -1143,7 +1377,7 @@ class App {
 
     this.isGenerating = true; this.updateSendButton();
     const systemPrompt = this._buildSystemPrompt();
-    const apiMessages  = this.api.buildApiMessages(this._buildContextMessages(history), lastUser.content, this.settings);
+    const apiMessages  = this._getActiveApi().buildApiMessages(this._buildContextMessages(history), lastUser.content, this.settings);
     const prefixText   = this._getPrefixText();
     this.abortController = new AbortController();
     let partial = { content: '', thinking: null };
@@ -1301,7 +1535,7 @@ class App {
     const contentEl = bubble.querySelector('.bubble-content');
 
     const systemPrompt = this._buildSystemPrompt();
-    const apiMessages  = this.api.buildApiMessages(
+    const apiMessages  = this._getActiveApi().buildApiMessages(
       this._buildContextMessages(this.currentSession.messages.slice(0, -1)), userMsg.content, this.settings
     );
     const prefixText = this._getPrefixText();
@@ -1656,6 +1890,12 @@ class App {
     };
     tempSlider?.addEventListener('input', () => syncTemp(tempSlider.value));
     tempInput?.addEventListener('input',  () => syncTemp(tempInput.value));
+
+    // プロバイダー変更 → UI切り替え・モデルリスト更新
+    document.getElementById('setting-provider')?.addEventListener('change', () => {
+      this.settings.provider = this.getVal('setting-provider');
+      this._updateProviderUI();
+    });
 
     // Thinking モード変更 → UI切り替え
     document.getElementById('setting-thinking-mode')?.addEventListener('change', () => this._updateThinkingUI());
